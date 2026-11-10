@@ -45,11 +45,27 @@ import kotlin.concurrent.thread
 class HidMouseService : Service() {
 
     companion object {
+        @Volatile var statusText: String = "未启动"
+            private set
+
+        private val events = java.util.ArrayDeque<String>()
+
+        fun addEvent(msg: String) {
+            synchronized(events) {
+                if (events.size >= 6) events.removeFirst()
+                events.addLast(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + " " + msg)
+            }
+        }
+
+        fun eventText(): String = synchronized(events) { events.joinToString("
+") }
         private const val TAG = "VpcHid"
         private const val CHANNEL_ID = "vpc_hid"
         private const val PORT = 8089
         private const val EMIT_INTERVAL_MS = 8L
         private const val HANDSHAKE = "VPC1"
+        private const val PREF = "vpc_target"
+        private const val KEY_LAST_ADDR = "last_addr"
 
         // 用 intArrayOf 写，再统一转 Byte：Kotlin 不允许 >127 的字面量直接进 byteArrayOf
         private val REPORT_DESC: ByteArray = intArrayOf(
@@ -64,8 +80,13 @@ class HidMouseService : Service() {
         ).map { it.toByte() }.toByteArray()
     }
 
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+
     private var hid: BluetoothHidDevice? = null
     private var host: BluetoothDevice? = null
+    private var lastDevice: BluetoothDevice? = null
+    private var reconnectJob: Thread? = null
 
     @Volatile private var running = false
     private var server: ServerSocket? = null
@@ -84,10 +105,19 @@ class HidMouseService : Service() {
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             if (state == BluetoothProfile.STATE_CONNECTED) {
                 host = device
+                lastDevice = device
+                getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+                    .putString(KEY_LAST_ADDR, device.address).apply()
+                statusText = "已连接电脑"
+                addEvent("已连接")
                 Log.i(TAG, "host connected")
             } else if (host == device) {
                 host = null
+                lastDevice = device
+                statusText = "等待电脑连接（自动重连中）"
+                addEvent("断开，开始重连")
                 Log.i(TAG, "host disconnected")
+                startReconnect()
             }
         }
 
@@ -97,6 +127,8 @@ class HidMouseService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onCreate() {
         super.onCreate()
@@ -111,23 +143,125 @@ class HidMouseService : Service() {
             return
         }
 
+        acquireLocks()
         registerHid()
         running = true
+        startWatchdog()
         thread(name = "tcp") { tcpLoop() }
         thread(name = "emit") { emitLoop() }
     }
 
-    @SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission", "WakelockTimeout")
+    private fun acquireLocks() {
+        runCatching {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "vpc:wifi")
+            wifiLock?.setReferenceCounted(false)
+            wifiLock?.acquire()
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "vpc:cpu")
+            wakeLock?.setReferenceCounted(false)
+            wakeLock?.acquire()
+        }
+    }
+
+    private fun releaseLocks() {
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        wifiLock = null
+        wakeLock = null
+    }
+
     override fun onDestroy() {
         running = false
         runCatching { server?.close() }
         runCatching { client?.close() }
         runCatching { hid?.unregisterApp() }
+        releaseLocks()
         server = null
         client = null
         host = null
         hid = null
         super.onDestroy()
+    }
+
+    /** 断线后每 5 秒尝试重连，最多 60 次（约 5 分钟） */
+    @SuppressLint("MissingPermission")
+    private fun startReconnect() {
+        if (reconnectJob?.isAlive == true) return
+        reconnectJob = thread(name = "reconnect") {
+            var tries = 0
+            while (running && host == null && tries < 60) {
+                tries++
+                val dev = lastDevice
+                if (dev != null) {
+                    runCatching { hid?.connect(dev) }
+                    statusText = "重连中（第 $tries 次）"
+                    Log.i(TAG, "reconnect #$tries")
+                } else {
+                    statusText = "等待电脑连接"
+                }
+                try {
+                    Thread.sleep(5000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+            if (host == null) {
+                statusText = "重连失败，请重新配对"
+                addEvent("重连放弃")
+            }
+        }
+    }
+
+    /**
+     * 看门狗：host 为空时每 3 秒尝试一次。
+     * 场景：蓝牙先连上、App 后启动，安卓不会补发 onConnectionStateChanged。
+     */
+    /** 读上次连过的 PC 地址，主动发起 HID 连接（参考 GhostHID：不等系统回调） */
+    @SuppressLint("MissingPermission")
+    private fun connectRemembered(): Boolean {
+        val dev = hid ?: return false
+        val addr = getSharedPreferences(PREF, Context.MODE_PRIVATE).getString(KEY_LAST_ADDR, null) ?: return false
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: return false
+        val target = adapter.bondedDevices?.firstOrNull { it.address.equals(addr, ignoreCase = true) } ?: run {
+            addEvent("上次的电脑已不在配对列表")
+            return false
+        }
+        val ok = runCatching { dev.connect(target) }.getOrDefault(false)
+        addEvent("主动连接 ${target.name}: $ok")
+        Log.i(TAG, "connectRemembered ${target.address} -> $ok")
+        return ok
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startWatchdog() {
+        thread(name = "watchdog") {
+            while (running) {
+                if (host == null && hid != null) {
+                    runCatching {
+                        val list = hid?.connectedDevices
+                        if (!list.isNullOrEmpty()) {
+                            host = list[0]
+                            lastDevice = list[0]
+                            statusText = "已连接电脑"
+                            addEvent("看门狗拿到设备")
+                        } else if (!connectRemembered()) {
+                            val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                            adapter?.bondedDevices?.forEach { d ->
+                                runCatching { hid?.connect(d) }
+                            }
+                            addEvent("看门狗尝试连接")
+                        }
+                    }
+                }
+                try {
+                    Thread.sleep(3000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------- 权限 / 前台
@@ -168,6 +302,17 @@ class HidMouseService : Service() {
                     false
                 }
                 Log.i(TAG, "registerApp=$ok")
+                addEvent("registerApp=$ok")
+                connectRemembered()
+
+                // 关键：注册时若主机已连接，不会补发 onConnectionStateChanged，这里主动取一次
+                runCatching {
+                    val list = dev.connectedDevices
+                    if (list.isNotEmpty()) {
+                        host = list[0]
+                        Log.i(TAG, "host from connectedDevices: ${host?.name}")
+                    }
+                }
             }
 
             override fun onServiceDisconnected(profile: Int) {
