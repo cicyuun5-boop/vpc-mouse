@@ -45,6 +45,9 @@ import kotlin.concurrent.thread
 class HidMouseService : Service() {
 
     companion object {
+        @Volatile var sendOk: Long = 0
+        @Volatile var sendFail: Long = 0
+
         @Volatile var statusText: String = "未启动"
             private set
 
@@ -143,6 +146,8 @@ class HidMouseService : Service() {
         }
 
         acquireLocks()
+        statusText = "服务已启动，等待电脑连接"
+        addEvent("服务启动")
         registerHid()
         running = true
         startWatchdog()
@@ -236,6 +241,11 @@ class HidMouseService : Service() {
     @SuppressLint("MissingPermission")
     private fun startWatchdog() {
         thread(name = "watchdog") {
+            runCatching {
+                val a = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                val bonded = a?.bondedDevices?.map { it.name ?: it.address } ?: emptyList()
+                addEvent("已配对 ${bonded.size} 台: " + bonded.joinToString("/"))
+            }
             while (running) {
                 if (host == null && hid != null) {
                     runCatching {
@@ -415,7 +425,7 @@ class HidMouseService : Service() {
     @SuppressLint("MissingPermission")
     private fun sendMove(dx: Int, dy: Int) {
         val dev = hid ?: return
-        val target = host ?: return
+        val target = host ?: run { sendFail++; return }
 
         var x = dx
         var y = dy
@@ -424,7 +434,10 @@ class HidMouseService : Service() {
             val sy = y.coerceIn(-127, 127)
             x -= sx
             y -= sy
-            runCatching { dev.sendReport(target, 0, byteArrayOf(0, sx.toByte(), sy.toByte())) }
+            val ok = runCatching {
+                dev.sendReport(target, 0, byteArrayOf(0, sx.toByte(), sy.toByte()))
+            }.getOrDefault(false)
+            if (ok) sendOk++ else sendFail++
         }
     }
 

@@ -26,12 +26,14 @@ class MainActivity : Activity() {
     private var ipText: TextView? = null
     private var connText: TextView? = null
     private var logView: TextView? = null
+    private var sendView: TextView? = null
 
     private val ui = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
             connText?.text = "连接状态：" + HidMouseService.statusText
             logView?.text = HidMouseService.eventText()
+            sendView?.text = "发送成功 ${HidMouseService.sendOk} / 失败 ${HidMouseService.sendFail}"
             ui.postDelayed(this, 500)
         }
     }
@@ -57,12 +59,14 @@ class MainActivity : Activity() {
         val ip = TextView(this).apply { text = "IP：点启动后显示"; textSize = 16f }
         val conn = TextView(this).apply { text = "连接状态：未启动"; textSize = 16f }
         val logv = TextView(this).apply { text = ""; textSize = 11f }
+        val sendv = TextView(this).apply { text = "发送成功 0 / 失败 0"; textSize = 14f }
         val startBtn = Button(this).apply { text = "启动 HID 鼠标服务" }
         val stopBtn = Button(this).apply { text = "停止" }
 
         root.addView(st)
         root.addView(conn)
         root.addView(logv)
+        root.addView(sendv)
         root.addView(ip)
         root.addView(startBtn)
         root.addView(stopBtn)
@@ -72,6 +76,7 @@ class MainActivity : Activity() {
         ipText = ip
         connText = conn
         logView = logv
+        sendView = sendv
 
         if (!hasBtPermission()) requestBtPermission()
 
