@@ -71,15 +71,15 @@ class HidMouseService : Service() {
         private const val KEY_LAST_ADDR = "last_addr"
 
         // 用 intArrayOf 写，再统一转 Byte：Kotlin 不允许 >127 的字面量直接进 byteArrayOf
+        // 与 GhostHID 逐字节一致：Report ID 2 + 按键 + X + Y + 滚轮（4 字节报告）
         private val REPORT_DESC: ByteArray = intArrayOf(
             0x05, 0x01, 0x09, 0x02, 0xA1, 0x01,
-            0x85, 0x02,                     // Report ID = 2（与 GhostHID 一致，Windows 才认）
-            0x09, 0x01, 0xA1, 0x00,
+            0x85, 0x02, 0x09, 0x01, 0xA1, 0x00,
             0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01,
             0x95, 0x03, 0x75, 0x01, 0x81, 0x02,
-            0x95, 0x01, 0x75, 0x05, 0x81, 0x01,
-            0x05, 0x01, 0x09, 0x30, 0x09, 0x31,
-            0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0x81, 0x06,
+            0x95, 0x01, 0x75, 0x05, 0x81, 0x03,
+            0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38,
+            0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06,
             0xC0, 0xC0
         ).map { it.toByte() }.toByteArray()
     }
@@ -438,7 +438,7 @@ class HidMouseService : Service() {
             x -= sx
             y -= sy
             val ok = runCatching {
-                dev.sendReport(target, 2, byteArrayOf(0, sx.toByte(), sy.toByte()))
+                dev.sendReport(target, 2, byteArrayOf(0, sx.toByte(), sy.toByte(), 0))
             }.getOrDefault(false)
             if (ok) sendOk++ else sendFail++
         }
@@ -449,9 +449,9 @@ class HidMouseService : Service() {
     private fun sendClick() {
         val dev = hid ?: return
         val target = host ?: return
-        runCatching { dev.sendReport(target, 2, byteArrayOf(1, 0, 0)) }
-        Thread.sleep(12)
-        runCatching { dev.sendReport(target, 2, byteArrayOf(0, 0, 0)) }
+        runCatching { dev.sendReport(target, 2, byteArrayOf(1, 0, 0, 0)) }
+        Thread.sleep(30)
+        runCatching { dev.sendReport(target, 2, byteArrayOf(0, 0, 0, 0)) }
     }
 
     // ---------------------------------------------------------------- 通知
