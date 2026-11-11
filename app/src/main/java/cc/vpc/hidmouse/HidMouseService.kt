@@ -45,6 +45,7 @@ import kotlin.concurrent.thread
 class HidMouseService : Service() {
 
     companion object {
+        @Volatile var recvLines: Long = 0
         @Volatile var sendOk: Long = 0
         @Volatile var sendFail: Long = 0
 
@@ -72,6 +73,7 @@ class HidMouseService : Service() {
         // 用 intArrayOf 写，再统一转 Byte：Kotlin 不允许 >127 的字面量直接进 byteArrayOf
         private val REPORT_DESC: ByteArray = intArrayOf(
             0x05, 0x01, 0x09, 0x02, 0xA1, 0x01,
+            0x85, 0x02,                     // Report ID = 2（与 GhostHID 一致，Windows 才认）
             0x09, 0x01, 0xA1, 0x00,
             0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01,
             0x95, 0x03, 0x75, 0x01, 0x81, 0x02,
@@ -395,6 +397,7 @@ class HidMouseService : Service() {
         val dy = p[1].toIntOrNull() ?: return
         val b = if (p.size >= 3) (p[2].toIntOrNull() ?: 0) else 0
 
+        recvLines++
         synchronized(accLock) {
             accX += dx
             accY += dy
@@ -435,7 +438,7 @@ class HidMouseService : Service() {
             x -= sx
             y -= sy
             val ok = runCatching {
-                dev.sendReport(target, 0, byteArrayOf(0, sx.toByte(), sy.toByte()))
+                dev.sendReport(target, 2, byteArrayOf(0, sx.toByte(), sy.toByte()))
             }.getOrDefault(false)
             if (ok) sendOk++ else sendFail++
         }
@@ -446,9 +449,9 @@ class HidMouseService : Service() {
     private fun sendClick() {
         val dev = hid ?: return
         val target = host ?: return
-        runCatching { dev.sendReport(target, 0, byteArrayOf(1, 0, 0)) }
+        runCatching { dev.sendReport(target, 2, byteArrayOf(1, 0, 0)) }
         Thread.sleep(12)
-        runCatching { dev.sendReport(target, 0, byteArrayOf(0, 0, 0)) }
+        runCatching { dev.sendReport(target, 2, byteArrayOf(0, 0, 0)) }
     }
 
     // ---------------------------------------------------------------- 通知

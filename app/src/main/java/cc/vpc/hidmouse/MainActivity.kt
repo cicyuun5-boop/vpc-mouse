@@ -33,7 +33,7 @@ class MainActivity : Activity() {
         override fun run() {
             connText?.text = "连接状态：" + HidMouseService.statusText
             logView?.text = HidMouseService.eventText()
-            sendView?.text = "发送成功 ${HidMouseService.sendOk} / 失败 ${HidMouseService.sendFail}"
+            sendView?.text = "收到 ${HidMouseService.recvLines} 条 / 发送成功 ${HidMouseService.sendOk} / 失败 ${HidMouseService.sendFail}"
             ui.postDelayed(this, 500)
         }
     }
