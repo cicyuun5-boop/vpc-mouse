@@ -324,8 +324,11 @@ class HidMouseService : Service() {
                 val dev = proxy as BluetoothHidDevice
                 hid = dev
                 val sdp = BluetoothHidDeviceAppSdpSettings(
-                    "Bluetooth Mouse", "vpc", "vpc",
-                    BluetoothHidDevice.SUBCLASS1_COMBO, REPORT_DESC
+                    "GhostHID Keyboard & Mouse",
+                    "Virtual HID Keyboard + Mouse Gateway",
+                    "Android",
+                    BluetoothHidDevice.SUBCLASS1_COMBO,
+                    REPORT_DESC
                 )
                 val ok = runCatching {
                     dev.registerApp(sdp, null, null, Executors.newSingleThreadExecutor(), callback)
