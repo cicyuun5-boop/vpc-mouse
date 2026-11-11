@@ -57,8 +57,7 @@ class HidMouseService : Service() {
             }
         }
 
-        fun eventText(): String = synchronized(events) { events.joinToString("
-") }
+        fun eventText(): String = synchronized(events) { events.joinToString(System.lineSeparator()) }
         private const val TAG = "VpcHid"
         private const val CHANNEL_ID = "vpc_hid"
         private const val PORT = 8089
