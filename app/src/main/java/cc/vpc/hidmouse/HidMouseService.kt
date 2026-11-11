@@ -292,6 +292,7 @@ class HidMouseService : Service() {
                 } catch (_: InterruptedException) {
                     break
                 }
+                break   // 只尝试一次，避免高频重试让 Windows 进入退避
             }
         }
     }
